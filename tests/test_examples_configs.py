@@ -20,18 +20,31 @@ from pathlib import Path
 
 import pytest
 
+from soup_cli.cli import app
 from soup_cli.config.loader import load_config
 from soup_cli.config.schema import SoupConfig
 from soup_cli.utils.data_lint import run_lint
+from soup_cli.utils.demo_bundles import _bundle_source_path, get_bundle
+from tests.cli_runner import CliRunner
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CONFIGS_DIR = REPO_ROOT / "examples" / "configs"
+EXAMPLES_DATA_DIR = REPO_ROOT / "examples" / "data"
+PACKAGE_FIXTURES_DIR = REPO_ROOT / "src" / "soup_cli" / "data" / "_fixtures"
 
 EXAMPLE_CONFIGS = sorted(CONFIGS_DIR.glob("*.yaml"))
-PREFERENCE_EXAMPLES = (
-    REPO_ROOT / "examples" / "data" / "chat_preferences.jsonl",
-    REPO_ROOT / "examples" / "data" / "dpo_sample.jsonl",
+SHARED_DATA_FIXTURES = sorted(
+    path.name
+    for path in PACKAGE_FIXTURES_DIR.glob("*.jsonl")
+    if (EXAMPLES_DATA_DIR / path.name).is_file()
 )
+PREFERENCE_EXAMPLES = (
+    EXAMPLES_DATA_DIR / "chat_preferences.jsonl",
+    EXAMPLES_DATA_DIR / "dpo_sample.jsonl",
+    PACKAGE_FIXTURES_DIR / "chat_preferences.jsonl",
+    PACKAGE_FIXTURES_DIR / "dpo_sample.jsonl",
+)
+PREFERENCE_DEMO_BUNDLES = ("dpo_demo", "sharegpt_demo")
 
 
 def test_example_configs_were_actually_found():
@@ -48,7 +61,26 @@ def test_example_configs_were_actually_found():
     )
 
 
-@pytest.mark.parametrize("data_path", PREFERENCE_EXAMPLES, ids=lambda path: path.name)
+def test_shared_data_fixtures_were_actually_found():
+    assert len(SHARED_DATA_FIXTURES) >= 4, (
+        f"Expected at least 4 shared data fixtures under {PACKAGE_FIXTURES_DIR}, "
+        f"found {len(SHARED_DATA_FIXTURES)}: {SHARED_DATA_FIXTURES}"
+    )
+
+
+@pytest.mark.parametrize("fixture_name", SHARED_DATA_FIXTURES)
+def test_package_fixture_matches_example_data(fixture_name: str):
+    package_path = PACKAGE_FIXTURES_DIR / fixture_name
+    example_path = EXAMPLES_DATA_DIR / fixture_name
+
+    assert package_path.read_bytes() == example_path.read_bytes()
+
+
+@pytest.mark.parametrize(
+    "data_path",
+    PREFERENCE_EXAMPLES,
+    ids=lambda path: f"{path.parent.name}/{path.name}",
+)
 def test_preference_example_lints_clean(data_path: Path):
     rows = [json.loads(line) for line in data_path.read_text(encoding="utf-8").splitlines()]
 
@@ -57,6 +89,21 @@ def test_preference_example_lints_clean(data_path: Path):
     assert report.overall == "OK", [
         (check.name, check.verdict, check.evidence) for check in report.checks
     ]
+
+
+@pytest.mark.parametrize("bundle_name", PREFERENCE_DEMO_BUNDLES)
+def test_preference_demo_bundle_lints_clean(bundle_name: str):
+    resolved_path = Path(_bundle_source_path(get_bundle(bundle_name)))
+    assert resolved_path.parent == PACKAGE_FIXTURES_DIR.resolve()
+
+    rows = [json.loads(line) for line in resolved_path.read_text(encoding="utf-8").splitlines()]
+    report = run_lint(rows, "auto")
+    assert report.overall == "OK", [
+        (check.name, check.verdict, check.evidence) for check in report.checks
+    ]
+
+    result = CliRunner().invoke(app, ["data", "lint", str(resolved_path)])
+    assert result.exit_code == 0, result.output
 
 
 @pytest.mark.parametrize("config_path", EXAMPLE_CONFIGS, ids=lambda p: p.name)
